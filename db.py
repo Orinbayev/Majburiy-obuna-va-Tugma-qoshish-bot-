@@ -2,19 +2,19 @@
 # Asinxron SQLite helper + bot uchun barcha kerakli CRUD funksiyalar
 
 from __future__ import annotations
-import aiosqlite
-from typing import Any, Iterable, Optional, Sequence, Tuple, List
-from datetime import datetime, timezone
 import os
+from typing import Any, Iterable, Optional, Tuple, List
+from datetime import datetime, timezone
+import aiosqlite
 
+# Render yoki lokal uchun: DB_PATH ni ENV dan o'qish.
+# Agar ENV yo'q bo'lsa, ./data/data.db dan foydalanamiz.
+DB_PATH = os.getenv("DB_PATH", "data/data.db")
 
-DB_PATH = "data.db"
-
-
-# ===================== Ulanish helperlari =====================
-
+# Papkani yarating (agar mavjud bo'lmasa)
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
+# ===================== Ulanish helperlari =====================
 async def _connect():
     db = await aiosqlite.connect(DB_PATH)
     # SQLite optimizatsiya va barqarorlik
@@ -24,7 +24,6 @@ async def _connect():
     return db
 
 async def _exec(sql: str, params: tuple | list | None = None):
-    # MUHIM: bu yerda 'await _connect()' bo‘lishi shart!
     async with await _connect() as db:
         await db.execute(sql, params or [])
         await db.commit()
@@ -33,17 +32,19 @@ async def _query(sql: str, params: tuple | list | None = None):
     async with await _connect() as db:
         cur = await db.execute(sql, params or [])
         rows = await cur.fetchall()
+        await cur.close()
     return rows
 
 async def _query_one(sql: str, params: tuple | list | None = None):
     async with await _connect() as db:
         cur = await db.execute(sql, params or [])
         row = await cur.fetchone()
+        await cur.close()
     return row
 
 async def _fetchall(sql: str, params: Iterable[Any] = ()) -> List[Tuple]:
     """ SELECT ko‘p qatorli natija (tuple) """
-    async with _connect() as db:
+    async with await _connect() as db:
         cur = await db.execute(sql, tuple(params))
         rows = await cur.fetchall()
         await cur.close()
@@ -51,7 +52,7 @@ async def _fetchall(sql: str, params: Iterable[Any] = ()) -> List[Tuple]:
 
 async def _fetchone(sql: str, params: Iterable[Any] = ()) -> Optional[Tuple]:
     """ SELECT bitta qator (tuple) """
-    async with _connect() as db:
+    async with await _connect() as db:
         cur = await db.execute(sql, tuple(params))
         row = await cur.fetchone()
         await cur.close()
@@ -63,7 +64,6 @@ async def _fetchval(sql: str, params: Iterable[Any] = ()) -> Any:
     return row[0] if row else None
 
 # ===================== Dastlabki yaratish =====================
-
 async def init_db():
     # Jadval: foydalanuvchilar
     await _exec("""
@@ -99,8 +99,8 @@ async def init_db():
     # Jadval: tugma kontenti
     await _exec("""
     CREATE TABLE IF NOT EXISTS button_contents (
-        id        INTEGER PRIMARY KEY AUTOINCREMENT,
-        button_id INTEGER NOT NULL,
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        button_id  INTEGER NOT NULL,
         media_type TEXT NOT NULL,       -- text/photo/video/document/audio/animation
         file_id    TEXT,                -- text bo'lsa NULL
         caption    TEXT,
@@ -130,7 +130,6 @@ async def init_db():
         await _exec("INSERT INTO settings(key, value) VALUES('menu_cols', '2')")
 
 # ===================== Users =====================
-
 async def upsert_user(u) -> None:
     """
     aiogram.types.User obyektidan foydalanuvchini saqlaydi/yangilaydi.
@@ -167,7 +166,6 @@ async def fetch_all_users() -> List[Tuple]:
     """)
 
 # ===================== Channels (majburiy obuna) =====================
-
 async def save_channel(chat_id: str,
                        title: Optional[str],
                        username: Optional[str],
@@ -186,7 +184,7 @@ async def save_channel(chat_id: str,
 
 async def remove_channel(chat_id: str) -> int:
     """ Kanalni o‘chirish (1 yoki 0 qaytaradi) """
-    async with _connect() as db:
+    async with await _connect() as db:
         cur = await db.execute("DELETE FROM channels WHERE chat_id=?", (str(chat_id),))
         await db.commit()
         return cur.rowcount or 0
@@ -202,7 +200,6 @@ async def list_channels_full() -> List[Tuple[str, Optional[str], Optional[str], 
     """)
 
 # ===================== Buttons (asosiy menyu) =====================
-
 async def _next_pos() -> int:
     v = await _fetchval("SELECT MAX(pos) FROM buttons")
     return (int(v) + 1) if v is not None else 1
@@ -210,7 +207,7 @@ async def _next_pos() -> int:
 async def create_button(title: str) -> int:
     """ Yangi tugma yaratadi, pos = MAX(pos)+1 """
     pos = await _next_pos()
-    async with _connect() as db:
+    async with await _connect() as db:
         cur = await db.execute("INSERT INTO buttons(title, pos) VALUES(?, ?)", (title, pos))
         await db.commit()
         return cur.lastrowid
@@ -246,7 +243,7 @@ async def _resequence_positions() -> None:
     """
     rows = await _fetchall("SELECT id FROM buttons ORDER BY pos ASC")
     pos = 1
-    async with _connect() as db:
+    async with await _connect() as db:
         for r in rows:
             bid = int(r[0])
             await db.execute("UPDATE buttons SET pos=? WHERE id=?", (pos, bid))
@@ -282,18 +279,17 @@ async def swap_with_neighbor(button_id: int, up: bool = True) -> None:
     nbid, npos = int(neighbor[0]), int(neighbor[1])
 
     # swap
-    async with _connect() as db:
+    async with await _connect() as db:
         await db.execute("UPDATE buttons SET pos=? WHERE id=?", (npos, bid))
         await db.execute("UPDATE buttons SET pos=? WHERE id=?", (pos, nbid))
         await db.commit()
 
 # ===================== Button Contents =====================
-
 async def add_button_content(button_id: int,
                              media_type: str,
                              file_id: Optional[str],
                              caption: Optional[str]) -> int:
-    async with _connect() as db:
+    async with await _connect() as db:
         cur = await db.execute(
             "INSERT INTO button_contents(button_id, media_type, file_id, caption) VALUES(?, ?, ?, ?)",
             (int(button_id), media_type, file_id, caption)
@@ -320,7 +316,6 @@ async def delete_button_content(content_id: int) -> None:
     await _exec("DELETE FROM button_contents WHERE id=?", (int(content_id),))
 
 # ===================== Adminlar =====================
-
 async def add_admin(user_id: int, name: Optional[str] = None, is_super: bool = False) -> None:
     await _exec("""
     INSERT INTO admins(user_id, name, is_super)
@@ -347,8 +342,6 @@ async def is_admin(user_id: int) -> bool:
 async def is_super_admin(user_id: int) -> bool:
     v = await _fetchval("SELECT 1 FROM admins WHERE user_id=? AND is_super=1 LIMIT 1", (int(user_id),))
     return v is not None
-
-
 
 async def bootstrap_super_admin(user_id: int | str | None = None, name: str | None = None) -> None:
     """
@@ -382,10 +375,8 @@ async def bootstrap_super_admin(user_id: int | str | None = None, name: str | No
     # 4) yo‘q bo‘lsa, super admin sifatida qo‘shamiz yoki yangilaymiz
     await add_admin(uid, name, is_super=True)
 
-# ===================== Qo‘shimcha/aliaslar (kerak bo‘lsa) =====================
-
-# Ba'zi eski kodlarda bo‘lishi mumkin:
-# list_channels() aliasti — faqat chat_id larni qaytaradi
+# ===================== Qo‘shimcha/aliaslar =====================
 async def list_channels() -> List[str]:
+    """ Ba'zi eski kodlar uchun aliast: faqat chat_id lar """
     rows = await _fetchall("SELECT chat_id FROM channels ORDER BY ROWID ASC")
     return [str(r[0]) for r in rows]
