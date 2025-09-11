@@ -17,15 +17,29 @@ os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
 async def _connect():
     db = await aiosqlite.connect(DB_PATH)
+    # SQLite optimizatsiya va barqarorlik
     await db.execute("PRAGMA journal_mode=WAL;")
     await db.execute("PRAGMA synchronous=NORMAL;")
+    await db.execute("PRAGMA foreign_keys=ON;")
     return db
 
-async def _exec(sql: str, params: Iterable[Any] = ()):
-    """ INSERT/UPDATE/DELETE/DDL uchun """
-    async with _connect() as db:
-        await db.execute(sql, tuple(params))
+async def _exec(sql: str, params: tuple | list | None = None):
+    # MUHIM: bu yerda 'await _connect()' bo‘lishi shart!
+    async with await _connect() as db:
+        await db.execute(sql, params or [])
         await db.commit()
+
+async def _query(sql: str, params: tuple | list | None = None):
+    async with await _connect() as db:
+        cur = await db.execute(sql, params or [])
+        rows = await cur.fetchall()
+    return rows
+
+async def _query_one(sql: str, params: tuple | list | None = None):
+    async with await _connect() as db:
+        cur = await db.execute(sql, params or [])
+        row = await cur.fetchone()
+    return row
 
 async def _fetchall(sql: str, params: Iterable[Any] = ()) -> List[Tuple]:
     """ SELECT ko‘p qatorli natija (tuple) """
