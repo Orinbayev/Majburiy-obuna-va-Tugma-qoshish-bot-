@@ -13,12 +13,13 @@ DB_PATH = "data.db"
 
 # ===================== Ulanish helperlari =====================
 
-def _connect():
-    """
-    aiosqlite connect obyektini qaytaradi (await QILMAYMIZ).
-    Foydalanish:  async with _connect() as db:
-    """
-    return aiosqlite.connect(DB_PATH)
+os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
+
+async def _connect():
+    db = await aiosqlite.connect(DB_PATH)
+    await db.execute("PRAGMA journal_mode=WAL;")
+    await db.execute("PRAGMA synchronous=NORMAL;")
+    return db
 
 async def _exec(sql: str, params: Iterable[Any] = ()):
     """ INSERT/UPDATE/DELETE/DDL uchun """
