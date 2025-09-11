@@ -1,0 +1,20 @@
+# Python & venv
+.venv/
+__pycache__/
+*.pyc
+
+# Env & secrets
+.env
+
+# DB va kesh
+*.sqlite
+*.sqlite3
+*.db
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
+
+# Exports/temporary
+*.xlsx
