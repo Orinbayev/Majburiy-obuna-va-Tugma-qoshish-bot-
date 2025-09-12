@@ -1,135 +1,156 @@
+from __future__ import annotations
 from aiogram import Router, F, Bot
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
 
-from db import upsert_user, list_buttons, list_button_contents, get_menu_cols
+from db import (
+    upsert_user, get_menu_cols,
+    list_buttons, find_button_by_title, has_children,
+    list_button_contents, get_button_parent,
+    bootstrap_super_admin, is_admin
+)
 from utils.subscription import check_subscriptions, get_unsubscribed
-from keyboards import subscribe_kb, main_menu_kb
 from utils.telegram import safe_edit
+from keyboards import subscribe_kb, reply_menu_kb, admin_menu_kb
 
 start_router = Router()
 
-WELCOME = (
-    "Assalomu alaykum!\n"
-    "Quyidagi majburiy kanallarga obuna bo‘ling. So‘ng «✅ Tekshirish» bosing."
-)
+WELCOME = ("Assalomu alaykum!\n"
+           "Quyidagi majburiy kanallarga obuna bo‘ling. So‘ng «✅ Tekshirish» bosing.")
 
-async def _show_menu(chat, user_id: int):
-    btns = await list_buttons()
-    if not btns:
-        await chat.answer("Menyu hali bo‘sh.")
-        return
-    cols = await get_menu_cols()
-    kb = main_menu_kb(btns, cols)          # <-- BU YERDA AWAIT YO‘Q!
-    await chat.answer("Menyu:", reply_markup=kb)
-
-@start_router.message(CommandStart())
-async def cmd_start(m: Message, bot: Bot):
-    # foydalanuvchini ro‘yxatga olish
-    await upsert_user(m.from_user)
-
-    # majburiy obuna tekshiruvi
-    if not await check_subscriptions(m.from_user.id, bot):
-        need = await get_unsubscribed(m.from_user.id, bot)
-        await m.answer(WELCOME, reply_markup=subscribe_kb(need))
-        return
-
-    await _show_menu(m, m.from_user.id)
-
-@start_router.callback_query(F.data == "back_menu")
-async def cb_back_menu(cb: CallbackQuery, bot: Bot):
-    if not await check_subscriptions(cb.from_user.id, bot):
-        need = await get_unsubscribed(cb.from_user.id, bot)
-        await safe_edit(cb.message, WELCOME, reply_markup=subscribe_kb(need))
-        return await cb.answer("Avval obuna bo‘ling.")
-    kb = main_menu_kb(await list_buttons(), await get_menu_cols())
-    await safe_edit(cb.message, "Menyu:", reply_markup=kb)
-    await cb.answer("Menyu")
-
-@start_router.callback_query(F.data == "check_sub")
-async def cb_check_sub(cb: CallbackQuery, bot: Bot):
-    if not await check_subscriptions(cb.from_user.id, bot):
-        need = await get_unsubscribed(cb.from_user.id, bot)
-        await safe_edit(cb.message, WELCOME, reply_markup=subscribe_kb(need))
-        return await cb.answer("Hali hammasi emas.")
-    kb = main_menu_kb(await list_buttons(), await get_menu_cols())
-    await safe_edit(cb.message, "Menyu:", reply_markup=kb)
-    await cb.answer("✅ Tekshirildi.")
-
-
-from aiogram import Bot
-from aiogram.types import CallbackQuery
-
-MAX_TEXT = 4096        # text limit
-MAX_CAPTION = 1024     # caption limit
+MAX_TEXT = 4096
+MAX_CAPTION = 1024
 
 def _chunks(s: str, n: int):
     for i in range(0, len(s), n):
         yield s[i:i+n]
 
-@start_router.callback_query(F.data.startswith("open_btn:"))
-async def open_button(cb: CallbackQuery, bot: Bot):
-    btn_id = int(cb.data.split(":", 1)[1])
-    contents = await list_button_contents(btn_id)
-    if not contents:
-        await cb.answer("Bu tugmada hozircha kontent yo‘q.", show_alert=False)
-        return
+class NavSG(StatesGroup):
+    here = State()  # current parent_id (None=root)
 
-    # Matn uchun (preview o‘chiriladi)
+async def _show_level(chat: Message, parent_id: int | None):
+    cols = await get_menu_cols()
+    btns = await list_buttons(parent_id)
+    kb = reply_menu_kb(btns, cols, with_back=(parent_id is not None))
+    await chat.answer("Menyu:", reply_markup=kb)
+
+# ---------- /start ----------
+@start_router.message(CommandStart())
+async def cmd_start(m: Message, bot: Bot, state: FSMContext):
+    await upsert_user(m.from_user)
+
+    if not await check_subscriptions(m.from_user.id, bot):
+        need = await get_unsubscribed(m.from_user.id, bot)
+        return await m.answer(WELCOME, reply_markup=subscribe_kb(need))
+
+    await state.set_state(NavSG.here)
+    await state.update_data(parent_id=None)
+    await _show_level(m, None)
+
+# ---------- majburiy obuna tekshiruvi ----------
+@start_router.callback_query(F.data == "check_sub")
+async def cb_check_sub(cb: CallbackQuery, bot: Bot, state: FSMContext):
+    if not await check_subscriptions(cb.from_user.id, bot):
+        need = await get_unsubscribed(cb.from_user.id, bot)
+        await safe_edit(cb.message, WELCOME, reply_markup=subscribe_kb(need))
+        return await cb.answer("Hali hammasi emas.")
+    await cb.answer("✅ Tekshirildi.")
+    await state.set_state(NavSG.here)
+    await state.update_data(parent_id=None)
+    await cb.message.answer("Rahmat! 👇")
+    await _show_level(cb.message, None)
+
+# ---------- /admin (global, doim ishlaydi) ----------
+@start_router.message(Command("admin"))
+async def admin_cmd(m: Message, state: FSMContext):
+    # birinchi marta bosilganda super-adminni bootstrap qilib qo'yamiz
+    await bootstrap_super_admin(m.from_user.id, m.from_user.full_name)
+    if not await is_admin(m.from_user.id):
+        return await m.answer("Bu bo‘lim faqat adminlar uchun.")
+    await state.clear()  # foydalanuvchi menyusi holatidan chiqamiz
+    await m.answer("Admin panel:", reply_markup=admin_menu_kb())
+
+# ---------- Reply menyu navigatsiyasi ----------
+@start_router.message(NavSG.here, F.text == "⬅️ Orqaga")
+async def go_back(m: Message, state: FSMContext):
+    d = await state.get_data()
+    current = d.get("parent_id")
+    up_id = await get_button_parent(current) if current is not None else None
+    await state.update_data(parent_id=up_id)
+    await _show_level(m, up_id)
+
+# ⚠️ Catch-all F.text – lekin buyruqlarni ("/...") ushlamaydi!
+@start_router.message(NavSG.here, F.text & ~F.text.startswith("/"))
+async def handle_press(m: Message, state: FSMContext, bot: Bot):
+    d = await state.get_data()
+    parent_id = d.get("parent_id")
+    title = (m.text or "").strip()
+
+    found = await find_button_by_title(parent_id, title)
+    if not found:
+        return await _show_level(m, parent_id)
+
+    bid, _ = found
+    if await has_children(bid):
+        await state.update_data(parent_id=bid)
+        return await _show_level(m, bid)
+
+    # leaf -> kontent yuborish
+    items = await list_button_contents(bid)
+    if not items:
+        return await m.answer("Bu tugmada hozircha kontent yo‘q.")
+
     text_kwargs = dict(parse_mode=None, disable_web_page_preview=True)
-    # Media uchun (preview parametri yo‘q!)
     media_kwargs = dict(parse_mode=None)
 
-    for _id, mtype, file_id, caption in contents:
+    for _id, mtype, file_id, caption in items:
         text = (caption or "").strip()
 
         if mtype == "text":
             for part in _chunks(text or " ", MAX_TEXT):
-                await cb.message.answer(part, **text_kwargs)
+                await m.answer(part, **text_kwargs)
 
         elif mtype == "photo":
             if text and len(text) > MAX_CAPTION:
-                await bot.send_photo(cb.from_user.id, file_id, **media_kwargs)
+                await bot.send_photo(m.chat.id, file_id, **media_kwargs)
                 for part in _chunks(text, MAX_TEXT):
-                    await cb.message.answer(part, **text_kwargs)
+                    await m.answer(part, **text_kwargs)
             else:
-                await bot.send_photo(cb.from_user.id, file_id, caption=(text or None), **media_kwargs)
+                await bot.send_photo(m.chat.id, file_id, caption=(text or None), **media_kwargs)
 
         elif mtype == "video":
             if text and len(text) > MAX_CAPTION:
-                await bot.send_video(cb.from_user.id, file_id, **media_kwargs)
+                await bot.send_video(m.chat.id, file_id, **media_kwargs)
                 for part in _chunks(text, MAX_TEXT):
-                    await cb.message.answer(part, **text_kwargs)
+                    await m.answer(part, **text_kwargs)
             else:
-                await bot.send_video(cb.from_user.id, file_id, caption=(text or None), **media_kwargs)
+                await bot.send_video(m.chat.id, file_id, caption=(text or None), **media_kwargs)
 
         elif mtype == "document":
             if text and len(text) > MAX_CAPTION:
-                await bot.send_document(cb.from_user.id, file_id, **media_kwargs)
+                await bot.send_document(m.chat.id, file_id, **media_kwargs)
                 for part in _chunks(text, MAX_TEXT):
-                    await cb.message.answer(part, **text_kwargs)
+                    await m.answer(part, **text_kwargs)
             else:
-                await bot.send_document(cb.from_user.id, file_id, caption=(text or None), **media_kwargs)
+                await bot.send_document(m.chat.id, file_id, caption=(text or None), **media_kwargs)
 
         elif mtype == "audio":
             if text and len(text) > MAX_CAPTION:
-                await bot.send_audio(cb.from_user.id, file_id, **media_kwargs)
+                await bot.send_audio(m.chat.id, file_id, **media_kwargs)
                 for part in _chunks(text, MAX_TEXT):
-                    await cb.message.answer(part, **text_kwargs)
+                    await m.answer(part, **text_kwargs)
             else:
-                await bot.send_audio(cb.from_user.id, file_id, caption=(text or None), **media_kwargs)
+                await bot.send_audio(m.chat.id, file_id, caption=(text or None), **media_kwargs)
 
         elif mtype == "animation":
             if text and len(text) > MAX_CAPTION:
-                await bot.send_animation(cb.from_user.id, file_id, **media_kwargs)
+                await bot.send_animation(m.chat.id, file_id, **media_kwargs)
                 for part in _chunks(text, MAX_TEXT):
-                    await cb.message.answer(part, **text_kwargs)
+                    await m.answer(part, **text_kwargs)
             else:
-                await bot.send_animation(cb.from_user.id, file_id, caption=(text or None), **media_kwargs)
-
+                await bot.send_animation(m.chat.id, file_id, caption=(text or None), **media_kwargs)
         else:
-            # noma’lum tur — matn sifatida yuboramiz
             for part in _chunks(text or "Qo‘llanmagan tur.", MAX_TEXT):
-                await cb.message.answer(part, **text_kwargs)
-
-    await cb.answer()
+                await m.answer(part, **text_kwargs)
