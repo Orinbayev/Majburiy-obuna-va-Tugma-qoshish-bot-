@@ -40,7 +40,7 @@ async def _show_level(chat: Message, parent_id: int | None):
     btns = await list_buttons(parent_id)
     kb = reply_menu_kb(btns, cols, with_back=(parent_id is not None))
     await chat.answer(
-        "📂 Menyu\n《👨‍💻 @Web_Pragrammer_uz》",
+        "📂 Menyu",
         reply_markup=kb
     )
 
