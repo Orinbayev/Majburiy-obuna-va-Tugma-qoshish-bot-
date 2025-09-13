@@ -39,52 +39,93 @@ async def _show_level(chat: Message, parent_id: int | None):
     cols = await get_menu_cols()
     btns = await list_buttons(parent_id)
     kb = reply_menu_kb(btns, cols, with_back=(parent_id is not None))
-    await chat.answer("Menyu:", reply_markup=kb)
+    await chat.answer(
+        "📂 Menyu\n《👨‍💻 @Web_Pragrammer_uz》",
+        reply_markup=kb
+    )
 
 
 async def _guard_sub_msg(m: Message, bot: Bot) -> bool:
-    """
-    Har safar tugma bosilganda yoki /start chaqirilganda obunani tekshiradi.
-    Obuna bo'lmasa – Subscribe oynasini ko'rsatadi va Reply-klaviaturani olib tashlaydi.
-    """
+    """Har safar /start yoki tugma bosilganda obunani tekshiradi."""
     ok = await check_subscriptions(m.from_user.id, bot)
     if ok:
         return True
     need = await get_unsubscribed(m.from_user.id, bot)
-    # Reply keyboardni olib tashlaymiz, subscribe inline klaviatura yuboramiz
     await m.answer(WELCOME, reply_markup=ReplyKeyboardRemove())
     await m.answer("👇 Majburiy kanallar:", reply_markup=subscribe_kb(need))
     return False
 
 
 async def _guard_sub_cb(cb: CallbackQuery, bot: Bot) -> bool:
-    """
-    Callback (✅ Tekshirish) uchun guard.
-    """
+    """Callback (✅ Tekshirish) uchun guard."""
     ok = await check_subscriptions(cb.from_user.id, bot)
     if ok:
         return True
     need = await get_unsubscribed(cb.from_user.id, bot)
-    # shu eski xabarni tahrirlab turamiz (inline markup uchun)
     try:
         await cb.message.edit_text(WELCOME, reply_markup=subscribe_kb(need))
     except Exception:
-        # agar edit bo'lmasa, yangisini yuboramiz
         await cb.message.answer(WELCOME, reply_markup=subscribe_kb(need))
     await cb.answer("Hali hammasi emas.")
     return False
 
 
+# ---------------------- START ----------------------
 @start_router.message(CommandStart())
 async def cmd_start(m: Message, bot: Bot, state: FSMContext):
     await upsert_user(m.from_user)
     if not await _guard_sub_msg(m, bot):
         return
+    # /start odatdagidek menyuni ko‘rsatadi (REKLAMA YO‘Q)
     await state.set_state(NavSG.here)
     await state.update_data(parent_id=None)
     await _show_level(m, None)
 
 
+# ---------------------- /help ----------------------
+HELP_TEXT = (
+    "👋 Xush kelibsiz!\n\n"
+    "🤖 Bu bot orqali siz:\n"
+    "📂 Kino va musiqalarni ko‘rishingiz mumkin\n"
+    "🔎 Kod orqali tez qidirish qilishingiz mumkin\n"
+    "📊 Admin paneldan foydalanishingiz mumkin\n\n"
+    "━━━━━━━━━━━━\n"
+    "👨‍💻 Dasturchi: @Web_Pragrammer_uz\n"
+    "━━━━━━━━━━━━"
+)
+
+
+
+# State ichida ham ishlasin
+@start_router.message(NavSG.here, Command("help"))
+async def help_from_state(m: Message):
+    await m.answer(HELP_TEXT)
+
+# Holatsiz holatda ham ishlasin
+@start_router.message(Command("help"))
+async def help_any(m: Message):
+    await m.answer(HELP_TEXT)
+
+
+# ---------------------- /admin har doim ishlasin ----------------------
+@start_router.message(NavSG.here, Command("admin"))
+async def admin_from_state(m: Message, state: FSMContext):
+    await bootstrap_super_admin(m.from_user.id, m.from_user.full_name)
+    if not await is_admin(m.from_user.id):
+        return await m.answer("Bu bo‘lim faqat adminlar uchun.")
+    await state.clear()  # menyu holatidan chiqamiz
+    await m.answer("Admin panel:", reply_markup=admin_menu_kb())
+
+@start_router.message(Command("admin"))
+async def admin_any(m: Message, state: FSMContext):
+    await bootstrap_super_admin(m.from_user.id, m.from_user.full_name)
+    if not await is_admin(m.from_user.id):
+        return await m.answer("Bu bo‘lim faqat adminlar uchun.")
+    await state.clear()
+    await m.answer("Admin panel:", reply_markup=admin_menu_kb())
+
+
+# ---------------------- Navigatsiya ----------------------
 @start_router.message(NavSG.here, F.text == "⬅️ Orqaga")
 async def go_back(m: Message, state: FSMContext, bot: Bot):
     if not await _guard_sub_msg(m, bot):
@@ -95,10 +136,9 @@ async def go_back(m: Message, state: FSMContext, bot: Bot):
     await state.update_data(parent_id=up_id)
     await _show_level(m, up_id)
 
-
-@start_router.message(NavSG.here, F.text)
+# MUHIM: buyruqlarni ("/...") ushlamasin
+@start_router.message(NavSG.here, F.text & ~F.text.startswith("/"))
 async def handle_press(m: Message, state: FSMContext, bot: Bot):
-    # Har bosishda obuna tekshiruvi
     if not await _guard_sub_msg(m, bot):
         return
 
@@ -108,7 +148,6 @@ async def handle_press(m: Message, state: FSMContext, bot: Bot):
 
     found = await find_button_by_title(parent_id, title)
     if not found:
-        # nomi bo'yicha topilmasa, shu darajadagi menyuni qayta ko'rsatamiz
         return await _show_level(m, parent_id)
 
     bid, _ = found
@@ -116,7 +155,6 @@ async def handle_press(m: Message, state: FSMContext, bot: Bot):
         await state.update_data(parent_id=bid)
         return await _show_level(m, bid)
 
-    # leaf -> kontent yuborishdan oldin ham ehtiyot uchun tekshiramiz
     if not await _guard_sub_msg(m, bot):
         return
 
@@ -184,33 +222,12 @@ async def handle_press(m: Message, state: FSMContext, bot: Bot):
 async def cb_check_sub(cb: CallbackQuery, bot: Bot, state: FSMContext):
     if not await _guard_sub_cb(cb, bot):
         return
-    # Obuna bo‘ldi -> Reply keyboard menyuga qaytaramiz
-    # (inline xabarni o‘chirib, yangi "Menyu" yuboramiz)
     try:
         await cb.message.delete()
     except Exception:
         pass
 
-    # joriy joyni tiklaymiz
     d = await state.get_data()
     parent_id = d.get("parent_id", None)
     await _show_level(cb.message, parent_id)
     await cb.answer("✅ Tekshirildi.")
-
-
-# /admin har qanday holatda ham ishlashi uchun:
-@start_router.message(NavSG.here, Command("admin"))
-async def admin_from_state(m: Message, state: FSMContext):
-    await bootstrap_super_admin(m.from_user.id, m.from_user.full_name)
-    if not await is_admin(m.from_user.id):
-        return await m.answer("Bu bo‘lim faqat adminlar uchun.")
-    await state.clear()
-    await m.answer("Admin panel:", reply_markup=admin_menu_kb())
-
-@start_router.message(Command("admin"))
-async def admin_any(m: Message, state: FSMContext):
-    await bootstrap_super_admin(m.from_user.id, m.from_user.full_name)
-    if not await is_admin(m.from_user.id):
-        return await m.answer("Bu bo‘lim faqat adminlar uchun.")
-    await state.clear()
-    await m.answer("Admin panel:", reply_markup=admin_menu_kb())
