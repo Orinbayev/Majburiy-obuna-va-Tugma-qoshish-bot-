@@ -227,6 +227,10 @@ async def cb_check_sub(cb: CallbackQuery, bot: Bot, state: FSMContext):
     except Exception:
         pass
 
+    # ✅ Holatni qayta o‘rnatamiz (shu joy muhim)
+    await state.set_state(NavSG.here)
+    await state.update_data(parent_id=None)
+
     d = await state.get_data()
     parent_id = d.get("parent_id", None)
     await _show_level(cb.message, parent_id)
